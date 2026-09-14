@@ -155,4 +155,14 @@ func TestUDPPortDisposition(t *testing.T) {
 			}
 		}
 	}
+
+	gInspect := gatewayWithPolicy(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
+profile "default" { credentials = [] }
+`)
+	gInspect.onboard = r
+	if got := gInspect.tsnetUDPDisposition(netip.AddrPortFrom(netip.MustParseAddr("8.8.8.8"), 443), onboarded); got != udpDrop {
+		t.Errorf("inspect UDP/443: disposition = %d, want drop", got)
+	}
 }

@@ -1735,12 +1735,26 @@ func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 	profile := g.profileFor(pip)
 	ep, authority, certHost := g.httpsMITMEndpoint(profile, host, dstPort)
 	if ep == nil {
-		if policy := g.Policy(); policy != nil && policy.UnknownHost == "deny" {
+		policy := g.Policy()
+		switch unknownHostPolicy(policy) {
+		case "deny":
 			log.Printf("sni: %s: unknown host denied", host)
 			return
+		case "inspect":
+			if policy != nil {
+				ep = policy.Endpoints[config.UnknownInspectEndpoint]
+			}
+			if ep == nil {
+				log.Printf("sni: %s: unknown host denied", host)
+				return
+			}
+			log.Printf("sni: %s: unknown host inspect", host)
+			g.mitmHTTPSWithCertHost(c, host, host, ep)
+			return
+		default:
+			g.splice(c, host)
+			return
 		}
-		g.splice(c, host)
-		return
 	}
 	if isHTTPSMITMFamily(ep.Family) {
 		// Every facet whose Transport() is "https-mitm" — https and
@@ -1788,6 +1802,13 @@ func (g *Gateway) shouldHandleHTTPSMITM(c net.Conn, dstIP string, dstPort uint16
 	profile := g.profileFor(peerIP(c))
 	ep, _, _ := g.httpsMITMEndpoint(profile, dstIP, dstPort)
 	return ep != nil && isHTTPSMITMFamily(ep.Family)
+}
+
+func unknownHostPolicy(policy *config.CompiledPolicy) string {
+	if policy == nil || policy.UnknownHost == "" {
+		return "passthrough"
+	}
+	return policy.UnknownHost
 }
 
 func (g *Gateway) httpsMITMEndpoint(profile, host string, dstPort uint16) (*config.CompiledEndpoint, string, string) {

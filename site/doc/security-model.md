@@ -87,6 +87,19 @@ Non-credentialled traffic is outside the security surface. If the
 agent bypasses the tunnel, it gets the same internet it would have
 without Claw Patrol — no credential leaks, just no protection.
 
+`defaults.unknown_host` decides what happens to HTTPS whose SNI
+matches no declared endpoint: `passthrough` (default) splices it
+unchanged, `deny` hangs up at the ClientHello, and `inspect`
+terminates TLS with the same local CA and runs the request through
+the rules of a declared `endpoint "https" "unknown"`. Inspect is a
+policy choice, not a credential path: no credential can be bound to
+`https.unknown` (the compiler rejects it), so an inspected request
+is always forwarded exactly as the agent sent it, and the agent's
+traffic to every unmatched host becomes visible in the action log
+and body captures. Connections the gateway cannot read as HTTP/1.1
+over the minted certificate (no SNI, ECH outer names it cannot
+serve, h2-only ALPN, non-HTTP protocols on 443) are closed.
+
 ### Leaked join credential
 
 The join credential can leak: from a backup, shell history, a

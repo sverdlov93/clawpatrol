@@ -533,3 +533,153 @@ func TestCompileLLMFailModeValues(t *testing.T) {
 		}
 	}
 }
+
+func loadCompile(t *testing.T, hcl string) (*config.CompiledPolicy, error) {
+	t.Helper()
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+hcl), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	return config.Compile(gw)
+}
+
+func TestCompileUnknownHostInspect(t *testing.T) {
+	cp, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
+rule "deny-pkg" {
+  endpoint  = https.unknown
+  condition = "http.path.endsWith('.tgz')"
+  verdict   = "deny"
+}
+profile "default" { credentials = [] }
+`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if cp.UnknownHost != "inspect" {
+		t.Fatalf("UnknownHost = %q", cp.UnknownHost)
+	}
+	ep := cp.Endpoints[config.UnknownInspectEndpoint]
+	if ep == nil || ep.Name != "unknown" {
+		t.Fatal("missing https.unknown")
+	}
+	if len(ep.Rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(ep.Rules))
+	}
+}
+
+func TestCompileUnknownHostInspectRequiresEndpoint(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("err = %v, want inspect to require endpoint https.unknown", err)
+	}
+}
+
+func TestCompileUnknownRulesRequireInspect(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "deny" }
+endpoint "https" "unknown" { hosts = [] }
+rule "deny-pkg" {
+  endpoint  = https.unknown
+  condition = "true"
+  verdict   = "deny"
+}
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "unknown_host") {
+		t.Fatalf("err = %v, want unknown_host inspect requirement", err)
+	}
+}
+
+func TestCompileUnknownHostInvalid(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "close" }
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "inspect") {
+		t.Fatalf("err = %v, want invalid unknown_host", err)
+	}
+}
+
+func TestCompileUnknownHostInspectRequiresHTTPSType(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+endpoint "openai_codex_https" "unknown" {
+  hosts = ["chatgpt.com"]
+}
+profile "default" { credentials = [] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("err = %v, want inspect to require type https", err)
+	}
+}
+
+func TestCompileUnknownRejectsCredentials(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "unknown" { hosts = [] }
+credential "bearer_token" "tok" { endpoint = https.unknown }
+profile "default" { credentials = [bearer_token.tok] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "credential") {
+		t.Fatalf("err = %v, want https.unknown credential bind rejected", err)
+	}
+}
+
+func TestCompileOtherUnknownTypeRulesWithoutInspect(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "passthrough" }
+endpoint "openai_codex_https" "unknown" {
+  hosts = ["chatgpt.com"]
+}
+rule "allow-codex" {
+  endpoint  = openai_codex_https.unknown
+  condition = "true"
+  verdict   = "allow"
+}
+profile "default" { credentials = [] }
+`)
+	if err != nil {
+		t.Fatalf("other-type unknown with rules must compile when unknown_host is not inspect: %v", err)
+	}
+}
+
+func TestCompileUnknownRejectsCredentialPin(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "inspect" }
+endpoint "https" "api" { hosts = ["api.example.test"] }
+endpoint "https" "unknown" { hosts = [] }
+credential "bearer_token" "tok" { endpoint = https.api }
+rule "deny-pinned" {
+  endpoint   = https.unknown
+  credential = bearer_token.tok
+  condition  = "true"
+  verdict    = "deny"
+}
+profile "default" { credentials = [bearer_token.tok] }
+`)
+	if err == nil || !strings.Contains(err.Error(), "pin a credential") {
+		t.Fatalf("err = %v, want credential pin on https.unknown rejected", err)
+	}
+}
+
+func TestCompileUnknownDisabledRulesWithoutInspect(t *testing.T) {
+	_, err := loadCompile(t, `
+defaults { unknown_host = "passthrough" }
+endpoint "https" "unknown" { hosts = [] }
+rule "deny-pkg" {
+  endpoint  = https.unknown
+  condition = "true"
+  verdict   = "deny"
+  disabled  = true
+}
+profile "default" { credentials = [] }
+`)
+	if err != nil {
+		t.Fatalf("disabled rule on https.unknown must not require inspect: %v", err)
+	}
+}
